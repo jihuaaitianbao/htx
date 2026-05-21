@@ -1174,6 +1174,85 @@ class HuobiClient:
             return False
         return self.login_with_ticket(ticket)
 
+    def login_2fa(self, ga_code, vtoken, p0_params):
+        """
+        执行2FA登录，需要GA验证码。
+        :param ga_code: GA验证码
+        :param vtoken: 设备vtoken
+        :param p0_params: 用于生成p0的参数字典
+        :return: 登录成功返回True，否则返回False
+        """
+        print(f"[*] 尝试进行2FA登录，GA验证码: {ga_code}")
+        url = f"https://{API_DOMAIN_L10N}/-/x/uc/uc/open/2fa/login"
+        headers = self._get_register_headers()
+        headers["content-type"] = "application/json; charset=utf-8"
+
+        # 生成p0和k0
+        p0, k0 = generate_p0_k0_dynamic(vtoken, p0_params)
+
+        # 构造cHash (这里假设cHash是请求体中部分字段的MD5，具体需要根据实际情况分析)
+        # 暂时使用一个简单的模拟，实际可能需要更复杂的逻辑
+        # 假设cHash是vtoken, ga_code, p0, k0的组合hash
+        cHash_data = f"{vtoken}{ga_code}{p0}{k0}"
+        cHash = hashlib.md5(cHash_data.encode()).hexdigest()
+
+        # login_ext_data 和 token 假设为固定值或从其他地方获取
+        login_ext_data = {
+            "af_id": "1779296534315-2389411869920825495",
+            "app_instance_id": "f49898860da0e3d165b19ccdbeda1215",
+            "af_app_id": "pro.huobi",
+            "af_device_id_type": "oaid",
+            "af_device_id": ""
+        }
+        # 这里的token很可能是login_with_ticket成功后获取的hb_pro_token
+        # 但2FA登录可能发生在hb_pro_token尚未获取之前，或者作为登录流程的一部分
+        # 根据附件中的请求，token字段是存在的，且值与响应中的uc_token/HB_SSO类似，但又不同
+        # 暂时使用一个placeholder，如果实际业务逻辑中需要，则需要调整
+        token = self.hb_pro_token if self.hb_pro_token else "e9741323422544b6badb7d4b6a8d4916" # Placeholder
+
+        payload = {
+            "p0": p0,
+            "vtoken": vtoken,
+            "ga_code": ga_code,
+            "cHash": cHash,
+            "k0": k0,
+            "isKnowDevice": True,
+            "login_ext_data": login_ext_data,
+            "vToken": vtoken, # 注意这里是vToken，与vtoken可能重复，根据HAR调整
+            "token": token,
+            "login_version": 4
+        }
+
+        try:
+            short_delay()
+            resp = self.session.post(url, headers=headers, json=payload, timeout=15)
+            result = resp.json()
+            self.request_count += 1
+
+            if result.get("code") == 200 and result.get("success"):
+                # 2FA登录成功后，通常会返回新的ticket或直接登录成功状态
+                # 根据附件响应，会返回ticket和uc_token
+                ticket = result.get("data", {}).get("ticket")
+                uc_token = result.get("data", {}).get("uc_token")
+                if uc_token:
+                    self.hb_uc_token = uc_token
+                    self._update_auth_cookies()
+                    print(f"[+] 2FA登录成功，获取到 uc_token: {self.hb_uc_token[:30]}...")
+                    # 2FA登录成功后，可能需要再次调用login_with_ticket来获取hb_pro_token
+                    if ticket:
+                        print(f"[*] 2FA登录返回ticket，尝试使用ticket登录...")
+                        return self.login_with_ticket(ticket)
+                    return True
+                else:
+                    print(f"[!] 2FA登录成功但未获取到uc_token: {result}")
+                    return False
+            else:
+                print(f"[!] 2FA登录失败: {result}")
+                return False
+        except Exception as e:
+            print(f"[!] login_2fa异常: {e}")
+            return False
+
     # ==================== 签到相关 ====================
 
     def get_check_in_tasks(self):
