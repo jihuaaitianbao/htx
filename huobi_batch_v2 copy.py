@@ -1616,7 +1616,7 @@ class HuobiClient:
     # 新增代码结束
 
     def turntable_draw(self, email=None):
-        """执行大转盘抽奖"""
+        """执行大转盘抽奖 (隔离Session版，防止污染主登录状态)"""
         global airdrop_fail_count
         global max_airdrop_failures
         global airdrop_success_accounts
@@ -1627,7 +1627,27 @@ class HuobiClient:
             print("[!] 未配置抽奖活动ID (ACTIVITY_ID)，跳过抽奖")
             return False
 
-        print(f"[*] 开始执行大转盘抽奖，活动ID: {activity_id}")
+        print(f"[*] 开始执行大转盘抽奖 (隔离模式)，活动ID: {activity_id}")
+
+        # --- 核心改进：创建隔离 Session ---
+        if USE_TLS_CLIENT:
+            isolated_session = tls_client.Session(
+                client_identifier=self.session.client_identifier,
+                random_tls_extension_order=True
+            )
+        else:
+            isolated_session = curl_requests.Session(
+                impersonate=getattr(self.session, 'impersonate', 'chrome110'))
+
+        if self.proxies:
+            isolated_session.proxies = self.proxies
+
+        # 复制基础指纹 Cookie
+        for k, v in self.session.cookies.items():
+            if k.startswith('HB-VULCAN') or k in ['URID', 'sensorsdata2015jssdkcross']:
+                isolated_session.cookies.set(k, v)
+
+        isolated_headers_base = self._get_register_headers()
 
         max_draw_times = 5
         draw_success_flag = False
@@ -1638,17 +1658,16 @@ class HuobiClient:
 
             # 1. 获取主 APP 的 ticket
             url1 = f"https://{API_DOMAIN_L10N}/-/x/uc/uc/open/ticket/get"
-            headers1 = self._get_register_headers()
+            headers1 = isolated_headers_base.copy()
             try:
                 short_delay()
-                resp1 = self.session.get(url1, headers=headers1, timeout=15)
+                resp1 = isolated_session.get(url1, headers=headers1, timeout=15)
                 try:
                     res1 = resp1.json()
                 except Exception:
                     res1 = {}
                 if not res1:
-                    print(
-                        f"[-] 请求1返回空，原始响应: {resp1.text[:200] if resp1 else 'None'}，重试...")
+                    print(f"[-] 请求1返回空，重试...")
                     continue
                 ticket1 = (res1.get("data") or {}).get("ticket")
                 if not ticket1:
@@ -1674,7 +1693,7 @@ class HuobiClient:
             }
             try:
                 short_delay()
-                resp2 = self.session.get(url2, headers=headers2, timeout=15)
+                resp2 = isolated_session.get(url2, headers=headers2, timeout=15)
                 try:
                     res2 = resp2.json()
                 except Exception:
@@ -1700,7 +1719,7 @@ class HuobiClient:
             headers3["HB-UC-TOKEN"] = new_uc_token
             try:
                 short_delay()
-                resp3 = self.session.get(url3, headers=headers3, timeout=15)
+                resp3 = isolated_session.get(url3, headers=headers3, timeout=15)
                 try:
                     res3 = resp3.json()
                 except Exception:
@@ -1734,7 +1753,7 @@ class HuobiClient:
             data4 = {"ticket": ticket2}
             try:
                 short_delay()
-                resp4 = self.session.post(
+                resp4 = isolated_session.post(
                     url4, headers=headers4, json=data4, timeout=15)
                 try:
                     res4 = resp4.json()
@@ -1754,7 +1773,6 @@ class HuobiClient:
 
             # 5. 加入转盘活动
             url5 = "https://www.bbagl.com/-/x/activity-center/hbg/v1/activity/turntable/join"
-            # 完全对齐易语言原始请求头（含 sec-ch-ua）
             ua_str = self.device.get('browser_ua', '')
             headers5 = {
                 "sec-ch-ua": '"Chromium";v="128", "Not;A=Brand";v="24", "Android WebView";v="128"',
@@ -1776,7 +1794,7 @@ class HuobiClient:
             data5 = {"activityId": activity_id}
             try:
                 short_delay()
-                resp5 = self.session.post(
+                resp5 = isolated_session.post(
                     url5, headers=headers5, json=data5, timeout=15)
                 try:
                     res5 = resp5.json()
@@ -1789,18 +1807,17 @@ class HuobiClient:
                     if "不满足加入条件" in msg:
                         print(f"[-] 加入转盘失败: {msg}")
                         return False
-                    # 其他错误则换代理重试
                     print(f"[-] 加入转盘失败: {msg}，重试...")
                     continue
             except Exception as e:
                 print(f"[-] 请求5异常: {e}")
                 continue
 
-            # 6. 获取用户信息 (GET) - 失败则换代理重试
+            # 6. 获取用户信息 (GET)
             url6 = f"https://www.bbagl.com/-/x/activity-center/hbg/v1/activity/turntable/userInfo?activityId={activity_id}"
             try:
                 short_delay()
-                resp6 = self.session.get(url6, headers=headers5, timeout=15)
+                resp6 = isolated_session.get(url6, headers=headers5, timeout=15)
                 try:
                     res6 = resp6.json()
                 except Exception:
@@ -1814,11 +1831,11 @@ class HuobiClient:
                 print(f"[-] 请求6异常: {e}，重试...")
                 continue
 
-            # 7. 获取任务 (GET) - 失败则换代理重试
+            # 7. 获取任务 (GET)
             url7 = f"https://www.bbagl.com/-/x/activity-center/hbg/v1/activity/turntable/tasks?activityId={activity_id}"
             try:
                 short_delay()
-                resp7 = self.session.get(url7, headers=headers5, timeout=15)
+                resp7 = isolated_session.get(url7, headers=headers5, timeout=15)
                 try:
                     res7 = resp7.json()
                 except Exception:
@@ -1830,7 +1847,7 @@ class HuobiClient:
                 print(f"[-] 请求7异常: {e}，重试...")
                 continue
 
-            # 8. 查询抽奖次数（对齐易语言原始请求头）
+            # 8. 查询抽奖次数
             url8 = f"https://www.htx.com.ph/-/x/activity-center/hbg/v1/activity/turntable/count?activityId={activity_id}"
             headers8 = {
                 "sec-ch-ua": '"Chromium";v="128", "Not;A=Brand";v="24", "Android WebView";v="128"',
@@ -1840,8 +1857,7 @@ class HuobiClient:
                 "vtoken": self.vtoken,
                 "accept": "application/json, text/plain, */*",
                 "hb-pro-token": new_pro_token,
-                # 易语言原始用的是主 uc_token，回退到 new_uc_token
-                "hb-uc-token": self.hb_uc_token or new_uc_token,
+                "hb-uc-token": new_uc_token,
                 "sec-ch-ua-platform": '"Android"',
                 "x-requested-with": "pro.huobi",
                 "sec-fetch-site": "same-origin",
@@ -1852,7 +1868,7 @@ class HuobiClient:
             }
             try:
                 short_delay()
-                resp8 = self.session.get(url8, headers=headers8, timeout=15)
+                resp8 = isolated_session.get(url8, headers=headers8, timeout=15)
                 try:
                     res8 = resp8.json()
                 except Exception:
@@ -1865,7 +1881,6 @@ class HuobiClient:
                 if str(res8.get("code")) != "200":
                     print(f"[-] 查询抽奖次数失败: {res8.get('message')}，返回")
                     return False
-                # 打印剩余抽奖次数
                 remain = (res8.get("data") or {}).get("count", "?")
                 print(f"[*] 剩余抽奖次数: {remain}")
             except Exception as e:
@@ -1897,7 +1912,7 @@ class HuobiClient:
             }
             try:
                 short_delay()
-                resp9 = self.session.post(
+                resp9 = isolated_session.post(
                     url9, headers=headers9, json=data9, timeout=15)
                 try:
                     res9 = resp9.json()
@@ -1909,46 +1924,34 @@ class HuobiClient:
                     msg = res9.get("message", "")
                     print(f"[-] 抽奖失败: {msg}")
                     if "抽奖次数不足" in msg:
-                        # 对齐易语言跳出循环逻辑：次数不足才跳出
                         print("[*] 抽奖次数已用完，结束抽奖")
                         break
-                    # 其他错误换代理重试
                     continue
 
-                # 解析奖励 — 严格对齐易语言原始逻辑：
-                # 奖励 = data[0].propertiesMap.value
-                # 如果奖励为空：奖励1 = data[0].count，奖励 = data[0].desc
-                # 显示：奖励1 + 奖励
                 data_list = res9.get("data") or []
                 if data_list and len(data_list) > 0:
                     award_item = data_list[0]
                     props_map = award_item.get("propertiesMap") or {}
-                    value = str(props_map.get("value") or "").strip()   # 奖励
+                    value = str(props_map.get("value") or "").strip()
                     if value:
                         reward_str_final = value
                     else:
-                        count_val = str(award_item.get("count")
-                                        or "").strip()  # 奖励1
-                        desc_val = str(award_item.get("desc")
-                                       or "").strip()   # 奖励
+                        count_val = str(award_item.get("count") or "").strip()
+                        desc_val = str(award_item.get("desc") or "").strip()
                         reward_str_final = f"{count_val}{desc_val}".strip()
                         if not reward_str_final:
-                            award_id = str(award_item.get(
-                                "awardId") or "").strip()
-                            reward_str_final = f"awardId={award_id}（详见DEBUG输出）"
+                            award_id = str(award_item.get("awardId") or "").strip()
+                            reward_str_final = f"awardId={award_id}"
                 else:
-                    reward_str_final = "(未解析到奖励详情，详见DEBUG输出)"
+                    reward_str_final = "(未解析到奖励详情)"
 
                 print(f"[+] 抽奖成功！获得奖励: {reward_str_final}")
                 draw_success_flag = True
 
-                # 记录成功的账号
                 if email:
                     with airdrop_success_lock:
                         if email not in airdrop_success_accounts:
                             airdrop_success_accounts.append(email)
-
-                # 抽奖成功后直接跳出循环（每次流程只抽一次）
                 break
 
             except Exception as e:
@@ -2018,6 +2021,7 @@ class HuobiClient:
         short_delay()
 
         # 2. 执行原有签到任务
+        # 注意：如果抽奖使用了隔离Session，我们需要确保这里仍然使用主Session进行签到
         print("\n[*] 获取任务列表...")
         novice_data = self.get_novice_tasks()
 
